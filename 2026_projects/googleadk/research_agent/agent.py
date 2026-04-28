@@ -15,7 +15,7 @@ if USE_LOCAL:
 elif USE_GROQ:
     model = LiteLlm(model="groq/llama-3.3-70b-versatile")
 else:
-    model = "gemini-2.5-flash"
+    model = "gemini-3.1-flash-lite-preview"
 
 # ── Tool 0: State — set home city ────────────────────────────────────────────
 
