@@ -1,6 +1,7 @@
 import os
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
+from google.adk.tools import ToolContext
 
 # ── Model switch ─────────────────────────────────────────────────────────────
 # Set USE_LOCAL=true in .env to use local Ollama/Gemma instead of Gemini.
@@ -10,21 +11,44 @@ USE_LOCAL = os.getenv("USE_LOCAL", "false").lower() == "true"
 if USE_LOCAL:
     model = LiteLlm(model="ollama_chat/gemma4:e4b", extra_body={"think": False})
 else:
-    model = "gemini-2.5-flash-lite"
+    model = "gemini-2.5-flash"
+
+# ── Tool 0: State — set home city ────────────────────────────────────────────
+
+def set_home_city(city: str, tool_context: ToolContext) -> dict:
+    """Saves the user's home city so it can be used in future questions.
+
+    Args:
+        city: The city the user wants to set as their home city.
+        tool_context: Injected by ADK — provides access to session state.
+
+    Returns:
+        A confirmation dict.
+    """
+    tool_context.state["home_city"] = city.lower()
+    return {"status": "saved", "home_city": city}
+
 
 # ── Tool 1: Time ──────────────────────────────────────────────────────────────
 
-def get_current_time(city: str) -> dict:
+def get_current_time(city: str, tool_context: ToolContext) -> dict:
     """Returns the current local time for a given city.
+    If city is empty, falls back to the user's saved home city.
 
     Args:
-        city: The name of the city (e.g. 'Tokyo', 'London').
+        city: The name of the city (e.g. 'Tokyo', 'London'). Can be empty to use home city.
+        tool_context: Injected by ADK — provides access to session state.
 
     Returns:
         A dict with city, current_time, timezone, and date.
     """
     import datetime
     import zoneinfo
+
+    if not city:
+        city = tool_context.state.get("home_city", "")
+    if not city:
+        return {"error": "No city provided and no home city saved. Ask the user to set a home city."}
 
     city_timezones = {
         "new york": "America/New_York",
@@ -53,15 +77,22 @@ def get_current_time(city: str) -> dict:
 
 # ── Tool 2: Weather ───────────────────────────────────────────────────────────
 
-def get_weather(city: str) -> dict:
+def get_weather(city: str, tool_context: ToolContext) -> dict:
     """Returns the current weather conditions for a given city.
+    If city is empty, falls back to the user's saved home city.
 
     Args:
-        city: The name of the city to get weather for.
+        city: The name of the city to get weather for. Can be empty to use home city.
+        tool_context: Injected by ADK — provides access to session state.
 
     Returns:
         A dict with city, temperature_celsius, condition, and humidity.
     """
+    if not city:
+        city = tool_context.state.get("home_city", "")
+    if not city:
+        return {"error": "No city provided and no home city saved. Ask the user to set a home city."}
+
     # Static data for now — we'll replace with a real API in a later step
     weather_data = {
         "tokyo":       {"temperature_celsius": 22, "condition": "Partly cloudy", "humidity": "65%"},
@@ -132,10 +163,14 @@ root_agent = Agent(
     description="A travel assistant that answers questions about time, weather, and currency.",
     instruction=(
         "You are a helpful travel assistant. "
+        "The user's home city is: {state.home_city} (may be empty if not set yet). "
+        "Use set_home_city when the user tells you their city or asks you to remember it. "
         "Use get_current_time when asked about the time in a city. "
         "Use get_weather when asked about weather or temperature. "
         "Use convert_currency when asked to convert money between currencies. "
+        "If no city is mentioned in the question, pass an empty string for city — "
+        "the tool will automatically use the saved home city. "
         "You can call multiple tools in one response if the user asks about more than one thing."
     ),
-    tools=[get_current_time, get_weather, convert_currency],
+    tools=[set_home_city, get_current_time, get_weather, convert_currency],
 )
