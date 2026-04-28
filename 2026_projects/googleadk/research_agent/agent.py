@@ -2,14 +2,18 @@ import os
 from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import ToolContext
+from google.adk.tools.agent_tool import AgentTool
 
 # ── Model switch ─────────────────────────────────────────────────────────────
 # Set USE_LOCAL=true in .env to use local Ollama/Gemma instead of Gemini.
 
+USE_GROQ  = os.getenv("USE_GROQ",  "false").lower() == "true"
 USE_LOCAL = os.getenv("USE_LOCAL", "false").lower() == "true"
 
 if USE_LOCAL:
     model = LiteLlm(model="ollama_chat/gemma4:e4b", extra_body={"think": False})
+elif USE_GROQ:
+    model = LiteLlm(model="groq/llama-3.3-70b-versatile")
 else:
     model = "gemini-2.5-flash"
 
@@ -75,6 +79,22 @@ def get_current_time(city: str, tool_context: ToolContext) -> dict:
     }
 
 
+# ── Sub-agent 1: Time ────────────────────────────────────────────────────────
+
+time_agent = Agent(
+    name="time_agent",
+    model=model,
+    description="Returns the current local time for a given city.",
+    instruction=(
+        "You are a time specialist. "
+        "The user's home city is: {state.home_city}. "
+        "Use get_current_time to answer questions about the current time. "
+        "If no city is given, pass an empty string — the tool will use the saved home city."
+    ),
+    tools=[get_current_time],
+)
+
+
 # ── Tool 2: Weather ───────────────────────────────────────────────────────────
 
 def get_weather(city: str, tool_context: ToolContext) -> dict:
@@ -109,6 +129,22 @@ def get_weather(city: str, tool_context: ToolContext) -> dict:
         return {"error": f"No weather data for '{city}'."}
 
     return {"city": city, **data}
+
+
+# ── Sub-agent 2: Weather ──────────────────────────────────────────────────────
+
+weather_agent = Agent(
+    name="weather_agent",
+    model=model,
+    description="Returns the current weather conditions for a given city.",
+    instruction=(
+        "You are a weather specialist. "
+        "The user's home city is: {state.home_city}. "
+        "Use get_weather to answer questions about weather or temperature. "
+        "If no city is given, pass an empty string — the tool will use the saved home city."
+    ),
+    tools=[get_weather],
+)
 
 
 # ── Tool 3: Currency ──────────────────────────────────────────────────────────
@@ -155,6 +191,21 @@ def convert_currency(amount: float, from_currency: str, to_currency: str) -> dic
     }
 
 
+# ── Sub-agent 3: Currency ─────────────────────────────────────────────────────
+
+currency_agent = Agent(
+    name="currency_agent",
+    model=model,
+    description="Converts an amount from one currency to another.",
+    instruction=(
+        "You are a currency specialist. "
+        "Use convert_currency to answer questions about currency conversion. "
+        "Always ask for the amount, source currency, and target currency if not provided."
+    ),
+    tools=[convert_currency],
+)
+
+
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
 root_agent = Agent(
@@ -162,15 +213,13 @@ root_agent = Agent(
     model=model,
     description="A travel assistant that answers questions about time, weather, and currency.",
     instruction=(
-        "You are a helpful travel assistant. "
+        "You are a helpful travel assistant and orchestrator. "
         "The user's home city is: {state.home_city} (may be empty if not set yet). "
         "Use set_home_city when the user tells you their city or asks you to remember it. "
-        "Use get_current_time when asked about the time in a city. "
-        "Use get_weather when asked about weather or temperature. "
-        "Use convert_currency when asked to convert money between currencies. "
-        "If no city is mentioned in the question, pass an empty string for city — "
-        "the tool will automatically use the saved home city. "
-        "You can call multiple tools in one response if the user asks about more than one thing."
+        "Delegate to time_agent when asked about the current time in a city. "
+        "Delegate to weather_agent when asked about weather or temperature. "
+        "Delegate to currency_agent when asked to convert money between currencies. "
+        "You can delegate to multiple agents in one response if the user asks about more than one thing."
     ),
-    tools=[set_home_city, get_current_time, get_weather, convert_currency],
+    tools=[set_home_city, AgentTool(time_agent), AgentTool(weather_agent), AgentTool(currency_agent)],
 )
