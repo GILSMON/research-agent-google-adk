@@ -41,16 +41,83 @@
 
 ---
 
-## Step 3: Sessions and State *(next)*
+## Step 3: Sessions and State
 
-**What we will build:** A `set_home_city` tool that saves the user's city to session state. `get_current_time` and `get_weather` will fall back to the saved city when no city is provided.
+**What we built:** A `set_home_city` tool that saves the user's city to session state. `get_current_time` and `get_weather` fall back to the saved city when no city is provided.
 
-**Concepts to learn:**
+**Concepts introduced:**
 
 - **`ToolContext`** — an object ADK injects automatically into any tool that declares it as a parameter. Gives the tool access to session state, among other things.
 - **`tool_context.state`** — a key-value dict that persists for the lifetime of a session. Any tool can read or write it.
 - **`{state.key}` in instruction** — ADK substitutes live state values into the agent's system prompt before the model sees it. Lets the model always know the current state.
 - **Session storage** — ADK stores sessions in a SQLite file at `research_agent/.adk/session.db`. State survives restarts as long as the same session ID is used.
+- **Session scope** — state is isolated per session ID. A new session starts with empty state.
+
+**Key file:** `research_agent/agent.py`
+
+---
+
+## Step 4: Multi-Agent System
+
+**What we built:** Split the single agent into a team — a root orchestrator that delegates to three specialist sub-agents.
+
+**Architecture:**
+```
+root_agent (orchestrator)
+├── time_agent      → get_current_time
+├── weather_agent   → get_weather
+└── currency_agent  → convert_currency
+```
+
+**Concepts introduced:**
+
+- **Sub-agents** — specialist agents with a narrow focus, their own instruction, and only the tools they need.
+- **`AgentTool`** — wraps a sub-agent so the root agent can call it exactly like a regular tool. ADK uses the sub-agent's `description` as the tool description sent to the model.
+- **Delegation** — the root agent reads the user's question and routes to the right specialist. It no longer calls tools directly (except `set_home_city`).
+- **Model choice matters** — small models (8B) struggle with multi-agent orchestration and generate malformed tool calls. Use a larger model (70B+ or Gemini) for the orchestrator.
+
+**Debugging learned:**
+- `debug_run.py` — programmatic runner that prints every ADK event (tool calls, tool results, model responses) to the terminal
+- `429 RESOURCE_EXHAUSTED` — each multi-agent turn costs 2-3 API calls (root decides → sub-agent executes → sub-agent responds). Free tier limits burn fast.
+- Groq `llama-3.3-70b-versatile` works for orchestration but occasionally generates malformed `AgentTool` calls. Gemini is more reliable for multi-agent.
+
+**Key file:** `research_agent/agent.py`
+
+---
+
+## Step 5: Built-in Tools — Google Search
+
+**What we built:** Added a `search_agent` with ADK's built-in `google_search` tool. The root agent delegates open-ended or real-time questions to it.
+
+**Architecture:**
+```
+root_agent (orchestrator)
+├── time_agent
+├── weather_agent
+├── currency_agent
+└── search_agent    → google_search (NEW)
+```
+
+**Concepts introduced:**
+
+- **Built-in tools** — ADK ships pre-built tools you import and attach directly. No function to write. Import: `from google.adk.tools import google_search`.
+- **Grounding** — the model's answer is backed by live search results, not just training data. The search results are injected into the model's context automatically.
+- **`google_search` is Gemini-only** — it uses Gemini's grounding feature under the hood. It does NOT work with Groq, Ollama, or any non-Gemini model. This is why `search_agent` hardcodes `model="gemini-3.1-flash-lite-preview"` even when the rest of the system uses Groq.
+
+**Why `google_search` only works with Gemini:**
+Grounding is a Gemini API feature — it allows the model to retrieve and cite live web results during generation. Other providers (Groq, Ollama) do not expose this capability. It is not a limitation of ADK itself.
+
+**Alternative search options (work with any model):**
+
+| Option | Free tier | How to use |
+|---|---|---|
+| **Tavily** | 1,000 searches/month | Custom tool calling Tavily API |
+| **SerpAPI** | 100 searches/month | Custom tool calling SerpAPI |
+| **DuckDuckGo** | Unlimited (unofficial) | Custom tool using `duckduckgo-search` Python package |
+
+For non-Gemini setups, build a custom tool function that calls one of the above APIs — same concept, just a Python function instead of a built-in.
+
+**Key file:** `research_agent/agent.py`
 
 ---
 

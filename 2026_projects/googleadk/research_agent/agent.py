@@ -3,6 +3,7 @@ from google.adk.agents import Agent
 from google.adk.models.lite_llm import LiteLlm
 from google.adk.tools import ToolContext
 from google.adk.tools.agent_tool import AgentTool
+from google.adk.tools import google_search
 
 # ── Model switch ─────────────────────────────────────────────────────────────
 # Set USE_LOCAL=true in .env to use local Ollama/Gemma instead of Gemini.
@@ -206,12 +207,27 @@ currency_agent = Agent(
 )
 
 
+# ── Sub-agent 4: Search ───────────────────────────────────────────────────────
+
+search_agent = Agent(
+    name="search_agent",
+    model="gemini-3.1-flash-lite-preview",
+    description="Searches the internet to answer general knowledge questions, news, and real-time information.",
+    instruction=(
+        "You are a research specialist with access to Google Search. "
+        "Use google_search to find accurate, up-to-date information. "
+        "Always cite what you found and keep answers concise."
+    ),
+    tools=[google_search],
+)
+
+
 # ── Agent ─────────────────────────────────────────────────────────────────────
 
 root_agent = Agent(
     name="research_agent",
     model=model,
-    description="A travel assistant that answers questions about time, weather, and currency.",
+    description="A travel assistant that answers questions about time, weather, currency, and general research.",
     instruction=(
         "You are a helpful travel assistant and orchestrator. "
         "The user's home city is: {state.home_city} (may be empty if not set yet). "
@@ -219,7 +235,9 @@ root_agent = Agent(
         "Delegate to time_agent when asked about the current time in a city. "
         "Delegate to weather_agent when asked about weather or temperature. "
         "Delegate to currency_agent when asked to convert money between currencies. "
+        "Delegate to search_agent for any general knowledge, news, or real-time questions "
+        "that the other agents cannot answer. "
         "You can delegate to multiple agents in one response if the user asks about more than one thing."
     ),
-    tools=[set_home_city, AgentTool(time_agent), AgentTool(weather_agent), AgentTool(currency_agent)],
+    tools=[set_home_city, AgentTool(time_agent), AgentTool(weather_agent), AgentTool(currency_agent), AgentTool(search_agent)],
 )
