@@ -62,10 +62,10 @@ async def main() -> None:
         session_service=SESSION_SERVICE,
     )
 
-    # Test the session state flow step by step
+    # Test HITL flow
     await chat(runner, "My home city is Dubai")
-    await chat(runner, "What's the weather?")
-    await chat(runner, "What time is it?")
+    await chat(runner, "Save a travel plan for Dubai — best time to visit is October, weather is mild, currency is AED.")
+    await chat(runner, "yes")
 
 
 if __name__ == "__main__":

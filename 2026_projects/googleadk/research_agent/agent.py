@@ -14,7 +14,7 @@ USE_LOCAL = os.getenv("USE_LOCAL", "false").lower() == "true"
 if USE_LOCAL:
     model = LiteLlm(model="ollama_chat/gemma4:e4b", extra_body={"think": False})
 elif USE_GROQ:
-    model = LiteLlm(model="groq/llama-3.3-70b-versatile")
+    model = LiteLlm(model="groq/llama-3.3-70b-versatile", extra_body={"parallel_tool_calls": False})
 else:
     model = "gemini-3.1-flash-lite-preview"
 
@@ -32,6 +32,74 @@ def set_home_city(city: str, tool_context: ToolContext) -> dict:
     """
     tool_context.state["home_city"] = city.lower()
     return {"status": "saved", "home_city": city}
+
+
+# ── Tool 0b: HITL — ask human ────────────────────────────────────────────────
+
+def ask_human(question: str, tool_context: ToolContext) -> dict:
+    """Pauses the agent and asks the human a question before proceeding.
+
+    Args:
+        question: The question or proposal to show the human.
+        tool_context: Injected by ADK — provides access to session state.
+
+    Returns:
+        A dict signalling the agent to wait for human input.
+    """
+    tool_context.state["pending_question"] = question
+    tool_context.state["awaiting_approval"] = True
+    return {
+        "status": "waiting_for_human",
+        "message": question,
+    }
+
+
+# ── Tool 0b2: HITL — approve plan ────────────────────────────────────────────
+
+def approve_plan(tool_context: ToolContext) -> dict:
+    """Records that the human has approved the pending travel plan.
+    Call this when the user says yes, ok, or confirms the plan.
+
+    Args:
+        tool_context: Injected by ADK — provides access to session state.
+
+    Returns:
+        A dict confirming approval is recorded.
+    """
+    tool_context.state["plan_approved"] = True
+    tool_context.state["awaiting_approval"] = False
+    return {"status": "approved", "message": "Approval recorded. Call save_travel_plan to complete the save."}
+
+
+# ── Tool 0c: HITL — save travel plan ─────────────────────────────────────────
+
+def save_travel_plan(city: str, notes: str, tool_context: ToolContext) -> dict:
+    """Saves a travel plan for a city. Requires human approval before saving.
+
+    Args:
+        city: The city the travel plan is for.
+        notes: Details of the travel plan.
+        tool_context: Injected by ADK — provides access to session state.
+
+    Returns:
+        A dict confirming the save, or requesting approval first.
+    """
+    if not tool_context.state.get("awaiting_approval") and not tool_context.state.get("plan_approved"):
+        tool_context.state["pending_plan"] = {"city": city, "notes": notes}
+        tool_context.state["awaiting_approval"] = True
+        return {
+            "status": "approval_required",
+            "message": f"I'd like to save this travel plan for {city}:\n\n{notes}\n\nDo you approve?",
+        }
+
+    if tool_context.state.get("plan_approved"):
+        plan = tool_context.state.get("pending_plan", {"city": city, "notes": notes})
+        tool_context.state["saved_plan"] = plan
+        tool_context.state["plan_approved"] = False
+        tool_context.state["awaiting_approval"] = False
+        return {"status": "saved", "plan": plan}
+
+    return {"status": "waiting", "message": "Still waiting for human approval."}
 
 
 # ── Tool 1: Time ──────────────────────────────────────────────────────────────
@@ -192,6 +260,30 @@ def convert_currency(amount: float, from_currency: str, to_currency: str) -> dic
     }
 
 
+# ── HITL: before_tool_callback ───────────────────────────────────────────────
+
+def before_tool_callback(tool, args, tool_context):
+    """Runs before every tool call. Blocks save_travel_plan if not approved.
+
+    Returns None to allow the tool to run normally.
+    Returns a dict to block the tool and use that dict as the result instead.
+    """
+    if tool.name != "save_travel_plan":
+        return None
+
+    awaiting = tool_context.state.get("awaiting_approval", False)
+    approved = tool_context.state.get("plan_approved", False)
+
+    # Block if approval is pending but not yet given
+    if awaiting and not approved:
+        return {
+            "status": "blocked",
+            "message": "Cannot save — still waiting for human approval. Please confirm yes or no.",
+        }
+
+    return None
+
+
 # ── Sub-agent 3: Currency ─────────────────────────────────────────────────────
 
 currency_agent = Agent(
@@ -227,6 +319,7 @@ search_agent = Agent(
 root_agent = Agent(
     name="research_agent",
     model=model,
+    before_tool_callback=before_tool_callback,
     description="A travel assistant that answers questions about time, weather, currency, and general research.",
     instruction=(
         "You are a helpful travel assistant and orchestrator. "
@@ -237,7 +330,17 @@ root_agent = Agent(
         "Delegate to currency_agent when asked to convert money between currencies. "
         "Delegate to search_agent for any general knowledge, news, or real-time questions "
         "that the other agents cannot answer. "
-        "You can delegate to multiple agents in one response if the user asks about more than one thing."
+        "You can delegate to multiple agents in one response if the user asks about more than one thing. "
+
+        "HUMAN IN THE LOOP RULES: "
+        "Use ask_human when you need clarification before you can act — for example, "
+        "if the user says 'save my trip' but hasn't given you enough details. "
+        "Use save_travel_plan when the user asks you to save, store, or remember a travel plan. "
+        "When save_travel_plan returns status=approval_required, show the plan to the user "
+        "and ask them to confirm with yes or no. Do not save until confirmed. "
+        "When the user says yes or approves, call approve_plan first, then immediately "
+        "call save_travel_plan to complete the save. Never skip approve_plan. "
+        "When the user says no or rejects, inform the user the plan was not saved."
     ),
-    tools=[set_home_city, AgentTool(time_agent), AgentTool(weather_agent), AgentTool(currency_agent), AgentTool(search_agent)],
+    tools=[set_home_city, ask_human, approve_plan, save_travel_plan, AgentTool(time_agent), AgentTool(weather_agent), AgentTool(currency_agent), AgentTool(search_agent)],
 )

@@ -121,6 +121,47 @@ For non-Gemini setups, build a custom tool function that calls one of the above 
 
 ---
 
+## Step 6: Human in the Loop (HITL)
+
+**What we built:** Added a multi-turn approval flow — the agent asks before saving data. The user must confirm before any write happens.
+
+**Architecture:**
+```
+User: "Save a travel plan for Dubai"
+  → save_travel_plan → status=approval_required (blocked, not yet saved)
+  → agent shows plan and asks "Do you approve?"
+User: "yes"
+  → approve_plan → sets plan_approved=True in state
+  → save_travel_plan → status=saved (now allowed through)
+```
+
+**Tools added:**
+- `ask_human(question)` — stores a question in state and signals the agent to wait. Used when the agent needs clarification before it can act.
+- `approve_plan()` — sets `plan_approved=True` in session state. Called when the user says yes. Required before `save_travel_plan` will complete the save.
+- `save_travel_plan(city, notes)` — saves a travel plan. Returns `approval_required` on first call. Completes the save only after `approve_plan` has been called.
+
+**Concepts introduced:**
+
+- **`before_tool_callback`** — a function attached to an agent that runs before every tool call. Returns `None` to allow the call through, or returns a dict to block it and use that dict as the tool result instead. Used here to intercept `save_travel_plan` and block it if approval hasn't been granted yet.
+- **State as a signaling mechanism** — instead of a hard-coded approval flow, state flags (`awaiting_approval`, `plan_approved`) communicate between turns. The agent reads state, tools write state, the callback reads state.
+- **Two-call pattern** — a write operation is intentionally split across two turns: first call returns `approval_required` and pauses; second call (after `approve_plan`) completes the write. This is the core HITL pattern.
+- **Why a separate `approve_plan` tool** — the model cannot write directly to session state. It can only change state by calling a tool. So to flip `plan_approved=True`, we need a dedicated tool the model can call when the user says yes.
+
+**Flow summary:**
+```
+Turn 1: user says "save plan"
+  → save_travel_plan → approval_required (blocked by callback on retry)
+  → agent asks user to confirm
+
+Turn 2: user says "yes"
+  → approve_plan → plan_approved=True
+  → save_travel_plan → saved (callback now allows it through)
+```
+
+**Key file:** `research_agent/agent.py`
+
+---
+
 ## Definitions Glossary
 
 | Term | Definition |
@@ -135,3 +176,6 @@ For non-Gemini setups, build a custom tool function that calls one of the above 
 | **`root_agent`** | The required variable name for the entry-point agent in an ADK package |
 | **`adk web`** | CLI command that launches the ADK developer UI for testing agents in a browser |
 | **`{state.key}`** | Template syntax in agent instructions — ADK substitutes the live value from session state before the model sees the prompt |
+| **`before_tool_callback`** | Agent hook that fires before every tool call. Returns `None` to allow, returns a dict to block and substitute that dict as the result |
+| **Human in the Loop (HITL)** | Pattern where the agent pauses and waits for human confirmation before completing a write or irreversible action |
+| **Two-call pattern** | HITL technique where a tool returns `approval_required` on first call and only completes the action on a second call after a separate approval tool has set a state flag |
